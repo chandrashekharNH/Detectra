@@ -7,11 +7,22 @@ Future<void> main() async {
 
   await Hive.initFlutter();
 
-  // Open ALL boxes BEFORE app starts
-  await Hive.openBox('batchBox');
-  await Hive.openBox<String>('scannedAssetBox');
-  await Hive.openBox('assetBox');
-  await Hive.openBox('imageBox');
+  // ✅ Open ALL boxes ONCE with CORRECT TYPES
+  if (!Hive.isBoxOpen('batchBox')) {
+    await Hive.openBox<Map>('batchBox');
+  }
+
+  if (!Hive.isBoxOpen('assetBox')) {
+    await Hive.openBox<Map>('assetBox');
+  }
+
+  if (!Hive.isBoxOpen('imageBox')) {
+    await Hive.openBox<Map>('imageBox');
+  }
+
+  if (!Hive.isBoxOpen('scannedAssetBox')) {
+    await Hive.openBox<String>('scannedAssetBox');
+  }
 
   runApp(const DetectraApp());
 }
