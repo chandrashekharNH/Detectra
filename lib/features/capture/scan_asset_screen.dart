@@ -1,8 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:camera/camera.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:camera/camera.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
 class ScanAssetScreen extends StatefulWidget {
@@ -13,27 +12,27 @@ class ScanAssetScreen extends StatefulWidget {
 }
 
 class _ScanAssetScreenState extends State<ScanAssetScreen> {
-  final MobileScannerController _barcodeController =
+  final MobileScannerController _scanner =
   MobileScannerController(facing: CameraFacing.back);
 
-  CameraController? _cameraController;
   bool _locked = false;
 
-  final RegExp _assetRegex = RegExp(r'TSLC\d{3,6}');
+  // ---------- normalize ----------
+  String _normalize(String v) =>
+      v.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
 
-  bool _isValid(String text) =>
-      _assetRegex.hasMatch(text.replaceAll(' ', ''));
+  bool _looksLikeAsset(String v) => v.length >= 5 && v.length <= 20;
 
-  // ================= CONFIRM =================
+  // ---------- CONFIRM ----------
   Future<void> _confirm(String assetId) async {
     _locked = true;
-    await _barcodeController.stop();
+    await _scanner.stop();
 
     final ok = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (_) => AlertDialog(
-        title: const Text('Asset ID Detected'),
+        title: const Text('Confirm Asset ID'),
         content: Text(
           assetId,
           style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
@@ -41,7 +40,7 @@ class _ScanAssetScreenState extends State<ScanAssetScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Rescan'),
+            child: const Text('Retry'),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
@@ -51,99 +50,104 @@ class _ScanAssetScreenState extends State<ScanAssetScreen> {
       ),
     );
 
-    if (ok == true) {
-      Hive.box<String>('scannedAssetBox')
-          .put('current_asset', assetId);
-
+    if (ok == true && mounted) {
       Navigator.pop(context, assetId);
     } else {
       _locked = false;
-      await _barcodeController.start();
+      await _scanner.start();
     }
   }
 
-  // ================= BARCODE =================
-  void _onBarcode(BarcodeCapture capture) {
+  // ---------- BARCODE ----------
+  void _onDetect(BarcodeCapture capture) {
     if (_locked) return;
 
-    for (final barcode in capture.barcodes) {
-      final value = barcode.rawValue;
-      if (value != null && _isValid(value)) {
+    for (final b in capture.barcodes) {
+      final raw = b.rawValue;
+      if (raw == null) continue;
+
+      final value = _normalize(raw);
+      if (_looksLikeAsset(value)) {
         _confirm(value);
         return;
       }
     }
   }
 
-  // ================= OCR FALLBACK =================
-  Future<void> _runOcrFallback() async {
-    if (_locked) return;
+  // ---------- OCR (SAFE SINGLE CAPTURE) ----------
+  Future<void> _scanPrintedLabel() async {
+    try {
+      final cameras = await availableCameras();
+      final controller = CameraController(
+        cameras.first,
+        ResolutionPreset.medium,
+        enableAudio: false,
+      );
 
-    final cameras = await availableCameras();
-    _cameraController = CameraController(
-      cameras.first,
-      ResolutionPreset.medium,
-      enableAudio: false,
-    );
+      await controller.initialize();
+      final picture = await controller.takePicture();
+      await controller.dispose();
 
-    await _cameraController!.initialize();
-    final file = await _cameraController!.takePicture();
+      final recognizer =
+      TextRecognizer(script: TextRecognitionScript.latin);
 
-    final recognizer =
-    TextRecognizer(script: TextRecognitionScript.latin);
+      final image = InputImage.fromFilePath(picture.path);
+      final result = await recognizer.processImage(image);
+      recognizer.close();
 
-    final inputImage = InputImage.fromFilePath(file.path);
-    final result = await recognizer.processImage(inputImage);
-
-    for (final block in result.blocks) {
-      for (final line in block.lines) {
-        final text = line.text.replaceAll(' ', '');
-        if (_isValid(text)) {
-          recognizer.close();
-          await _confirm(text);
-          return;
+      for (final block in result.blocks) {
+        for (final line in block.lines) {
+          final value = _normalize(line.text);
+          if (_looksLikeAsset(value)) {
+            _confirm(value);
+            return;
+          }
         }
       }
+
+      _showMessage('No readable asset ID found');
+    } catch (_) {
+      _showMessage('Failed to scan label');
     }
+  }
 
-    recognizer.close();
+  // ---------- MANUAL ----------
+  Future<void> _manualEntry() async {
+    final ctrl = TextEditingController();
 
-    if (mounted) {
-      await showDialog(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Asset Not Detected'),
-          content: const Text(
-              'Please align the sticker clearly and try again.'),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _locked = false;
-                _barcodeController.start();
-              },
-              child: const Text('Retry'),
-            ),
-          ],
+    final v = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Enter Asset ID'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
         ),
-      );
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () =>
+                Navigator.pop(context, _normalize(ctrl.text)),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+
+    if (v != null && v.isNotEmpty && mounted) {
+      Navigator.pop(context, v);
     }
   }
 
-  // ================= AUTO OCR TRIGGER =================
-  @override
-  void initState() {
-    super.initState();
-
-    // OCR fallback after 4 seconds if barcode fails
-    Future.delayed(const Duration(seconds: 4), () {
-      if (!_locked) {
-        _runOcrFallback();
-      }
-    });
+  void _showMessage(String msg) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  // ================= UI =================
+  // ---------- UI ----------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -151,11 +155,11 @@ class _ScanAssetScreenState extends State<ScanAssetScreen> {
       body: Stack(
         children: [
           MobileScanner(
-            controller: _barcodeController,
-            onDetect: _onBarcode,
+            controller: _scanner,
+            onDetect: _onDetect,
           ),
 
-          // Scan guide
+          // ROI guide
           Center(
             child: Container(
               width: 260,
@@ -167,15 +171,32 @@ class _ScanAssetScreenState extends State<ScanAssetScreen> {
             ),
           ),
 
-          const Positioned(
-            bottom: 24,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: Text(
-                'Align asset barcode or sticker inside the box',
-                style: TextStyle(color: Colors.white),
-              ),
+          Positioned(
+            bottom: 20,
+            left: 16,
+            right: 16,
+            child: Column(
+              children: [
+                const Text(
+                  'Scan QR / Barcode or printed sticker',
+                  style: TextStyle(color: Colors.white),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    OutlinedButton(
+                      onPressed: _scanPrintedLabel,
+                      child: const Text('Scan Label'),
+                    ),
+                    const SizedBox(width: 12),
+                    OutlinedButton(
+                      onPressed: _manualEntry,
+                      child: const Text('Manual Entry'),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
         ],
@@ -185,8 +206,7 @@ class _ScanAssetScreenState extends State<ScanAssetScreen> {
 
   @override
   void dispose() {
-    _barcodeController.dispose();
-    _cameraController?.dispose();
+    _scanner.dispose();
     super.dispose();
   }
 }

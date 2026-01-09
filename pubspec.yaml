@@ -15,7 +15,6 @@ dependencies:
   cupertino_icons: ^1.0.8
 
   # Camera & Media
-  camera: ^0.10.6
   path_provider: ^2.1.2
   flutter_image_compress: ^2.2.0
 
@@ -25,8 +24,7 @@ dependencies:
 
   # Scan & OCR
   mobile_scanner: ^7.1.4
-  google_mlkit_commons: ^0.11.0
-  google_mlkit_text_recognition: ^0.15.0
+  camera: ^0.11.0
 
   # Permissions
   permission_handler: ^11.4.0
@@ -43,6 +41,11 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   build_runner: ^2.4.8
   hive_generator: ^2.0.1
+  hive_flutter: ^1.1.0
+  mobile_scanner: ^7.1.4
+  camera: ^0.11.0
+  google_mlkit_text_recognition: ^0.13.0
+  google_mlkit_document_scanner: ^0.3.0
 
 flutter:
   uses-material-design: true

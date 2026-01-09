@@ -1,10 +1,11 @@
-import 'dart:io';
+import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path/path.dart' as p;
+
+import 'bulk_models.dart';
+import 'bulk_upload_preview_screen.dart';
 
 class BulkUploadScreen extends StatefulWidget {
   const BulkUploadScreen({super.key});
@@ -14,146 +15,91 @@ class BulkUploadScreen extends StatefulWidget {
 }
 
 class _BulkUploadScreenState extends State<BulkUploadScreen> {
-  late final Box<Map> batchBox;
-  late final Box<Map> assetBox;
-  late final Box<Map> imageBox;
+  bool loading = false;
 
-  bool _loading = false;
-  String _status = 'No upload started';
+  // Final parsed preview
+  final List<BulkPreviewBatch> previewBatches = [];
 
-  @override
-  void initState() {
-    super.initState();
-    batchBox = Hive.box<Map>('batchBox');
-    assetBox = Hive.box<Map>('assetBox');
-    imageBox = Hive.box<Map>('imageBox');
-  }
-
-  // ================= ENTRY =================
-  Future<void> _startBulkUpload() async {
-    if (_loading) return;
-    if (kIsWeb) {
-      await _pickZip();
-    } else {
-      await _pickFolder();
-    }
-  }
-
-  // ================= MOBILE: FOLDER =================
-  Future<void> _pickFolder() async {
-    final path = await FilePicker.platform.getDirectoryPath();
-    if (path == null) return;
-
-    setState(() {
-      _loading = true;
-      _status = 'Reading batch folder...';
-    });
-
-    final batchId = p.basename(path);
-    _createBatch(batchId, batchId);
-
-    final batchDir = Directory(path);
-    final assetDirs = batchDir.listSync().whereType<Directory>();
-
-    for (final assetDir in assetDirs) {
-      final assetId = p.basename(assetDir.path);
-      _createAsset(assetId, batchId);
-
-      int index = 1;
-      for (final file in assetDir.listSync().whereType<File>()) {
-        _createImage(batchId, assetId, file.path, index++);
-      }
-    }
-
-    _finish();
-  }
-
-  // ================= WEB: ZIP =================
-  Future<void> _pickZip() async {
+  // ================= PICK ZIP =================
+  Future<void> pickZip() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['zip'],
       withData: true,
     );
-
     if (result == null || result.files.first.bytes == null) return;
 
     setState(() {
-      _loading = true;
-      _status = 'Extracting ZIP...';
+      loading = true;
+      previewBatches.clear();
     });
 
-    final archive = ZipDecoder().decodeBytes(result.files.first.bytes!);
-    final map = <String, Map<String, List<ArchiveFile>>>{};
+    final bytes = result.files.first.bytes!;
+    final archive = ZipDecoder().decodeBytes(bytes);
+
+    final Map<String, BulkPreviewBatch> batchMap = {};
 
     for (final file in archive) {
       if (!file.isFile) continue;
-      final parts = p.split(file.name);
-      if (parts.length < 3) continue;
 
-      map.putIfAbsent(parts[0], () => {});
-      map[parts[0]]!.putIfAbsent(parts[1], () => []);
-      map[parts[0]]![parts[1]]!.add(file);
+      final parts = p.split(file.name);
+
+      // ❌ Ignore Mac junk
+      if (parts.any((e) => e.startsWith('__MACOSX'))) continue;
+      if (parts.any((e) => e == '.DS_Store')) continue;
+
+      // Expect: Batches / Batch / Asset / Image
+      final batchesIndex = parts.indexOf('Batches');
+      if (batchesIndex == -1) continue;
+      if (parts.length <= batchesIndex + 3) continue;
+
+      final batchName = parts[batchesIndex + 1];
+      final assetId = parts[batchesIndex + 2];
+      final imageName = p.basename(file.name);
+
+      // ---------- Batch ----------
+      final batch = batchMap.putIfAbsent(
+        batchName,
+            () => BulkPreviewBatch(
+          batchId: batchName,
+          batchName: batchName,
+          assets: [],
+        ),
+      );
+
+      // ---------- Asset ----------
+      final asset = batch.assets.firstWhere(
+            (a) => a.assetId == assetId,
+        orElse: () {
+          final a = BulkPreviewAsset(assetId: assetId, images: []);
+          batch.assets.add(a);
+          return a;
+        },
+      );
+
+      // ---------- Image (CRITICAL FIX) ----------
+      asset.images.add(
+        BulkPreviewImage(
+          name: imageName,
+          bytes: Uint8List.fromList(file.content as List<int>),
+        ),
+      );
     }
 
-    map.forEach((batchId, assets) {
-      _createBatch(batchId, batchId);
+    previewBatches.addAll(batchMap.values);
 
-      assets.forEach((assetId, files) {
-        _createAsset(assetId, batchId);
+    setState(() => loading = false);
 
-        int index = 1;
-        for (final _ in files) {
-          final path = 'web://$batchId/$assetId/$index.jpg';
-          _createImage(batchId, assetId, path, index++);
-        }
-      });
-    });
-
-    _finish();
-  }
-
-  // ================= DB =================
-  void _createBatch(String id, String name) {
-    if (batchBox.containsKey(id)) return;
-    batchBox.put(id, {
-      'batchId': id,
-      'name': name,
-      'createdAt': DateTime.now().toIso8601String(),
-    });
-  }
-
-  void _createAsset(String id, String batchId) {
-    if (assetBox.containsKey(id)) return;
-    assetBox.put(id, {
-      'assetId': id,
-      'batchId': batchId,
-      'createdAt': DateTime.now().toIso8601String(),
-    });
-  }
-
-  void _createImage(String batchId, String assetId, String path, int index) {
-    final id = '${assetId}_$index';
-    if (imageBox.containsKey(id)) return;
-
-    imageBox.put(id, {
-      'imageId': id,
-      'batchId': batchId,
-      'assetId': assetId,
-      'localPath': path,
-      'createdAt': DateTime.now().toIso8601String(),
-    });
-  }
-
-  void _finish() {
-    setState(() {
-      _loading = false;
-      _status = 'Bulk upload completed successfully';
-    });
-
-    Future.delayed(const Duration(seconds: 1), () {
-      if (mounted) Navigator.pop(context);
-    });
+    if (previewBatches.isNotEmpty && mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => BulkUploadPreviewScreen(
+            batches: previewBatches,
+          ),
+        ),
+      );
+    }
   }
 
   // ================= UI =================
@@ -161,28 +107,13 @@ class _BulkUploadScreenState extends State<BulkUploadScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Bulk Upload')),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          children: [
-            const Text(
-              'Import assets in bulk',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 20),
-
-            ElevatedButton.icon(
-              icon: const Icon(Icons.upload),
-              label: Text(kIsWeb ? 'Upload ZIP File' : 'Select Batch Folder'),
-              onPressed: _loading ? null : _startBulkUpload,
-            ),
-
-            const SizedBox(height: 24),
-
-            if (_loading) const CircularProgressIndicator(),
-            const SizedBox(height: 12),
-            Text(_status),
-          ],
+      body: Center(
+        child: loading
+            ? const CircularProgressIndicator()
+            : ElevatedButton.icon(
+          icon: const Icon(Icons.upload),
+          label: const Text('Upload ZIP'),
+          onPressed: pickZip,
         ),
       ),
     );

@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import '../capture/scan_asset_screen.dart';
-import '../capture/capture_screen.dart';
 import '../bulk/bulk_upload_screen.dart';
+import '../capture/capture_assets_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -169,7 +169,7 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => CaptureScreen(
+        builder: (_) => CaptureAssetsScreen(
           batchId: selectedBatchId!,
           assetId: selectedAssetId!,
         ),
